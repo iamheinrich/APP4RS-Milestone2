@@ -1,10 +1,10 @@
-import os
 import pandas as pd
 import numpy as np
 from PIL import Image
 import lmdb
 import tqdm
 from safetensors.numpy import save
+from pathlib import Path
 
 # expected resolutions for the BigEarthNet dataset
 expected_resolutions = {
@@ -23,7 +23,7 @@ expected_resolutions = {
 }
 
 
-def convert_tif_file_to_numpy_array(tif_file_path):
+def convert_tif_file_to_numpy_array(tif_file_path: Path):
     # Convert a .tif file to a numpy array
     with Image.open(tif_file_path) as img:
         return np.array(img)
@@ -36,43 +36,40 @@ def create_band_dictionary():
     return band_dict
 
 
-def convert_ben_dataset_to_lmdb(ben_dataset_path, lmdb_dir):
+def convert_ben_dataset_to_lmdb(ben_dataset_path: str, lmdb_dir: str):
     """
     Convert the BEN dataset to an LMDB database of safetensor patches.
-
-    :param ben_dataset_path: Path to the BEN dataset.
-    :param lmdb_dir: Directory where the LMDB database will be stored.
     """
-    # Ensure the LMDB directory exists
-    if not os.path.exists(lmdb_dir):
-        os.makedirs(lmdb_dir, exist_ok=True)
+    ben_dataset_path = Path(ben_dataset_path)
+    lmdb_dir = Path(lmdb_dir)
 
-    # First, collect all patch directories that contain at least one .tif file
+    # Ensure the LMDB directory exists
+    lmdb_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find all patch directories that contain at least one .tif file
     patch_dirs = []
-    for root, dirs, files in os.walk(ben_dataset_path):
-        if any(f.endswith('.tif') for f in files):
-            patch_dirs.append(root)
+    for dir_path in ben_dataset_path.glob('**/'):
+        if dir_path.is_dir():
+            tif_files = list(dir_path.glob('*.tif'))
+            if tif_files:
+                patch_dirs.append(dir_path)
 
     total_folders = len(patch_dirs)
 
     # Open the LMDB environment with a specified map size
-    with lmdb.open(lmdb_dir, map_size=int(1e12)) as env:
-
+    # Map size is set to 3GB for BEN, as previously discussed
+    with lmdb.open(str(lmdb_dir), map_size=int(3e9)) as env:
         with env.begin(write=True) as txn:
-
             # Iterate over all patch directories with tqdm showing progress
-            for root in tqdm.tqdm(patch_dirs, total=total_folders, desc="Processing folders", unit="folder"):
-                patch_path = root
+            for patch_path in tqdm.tqdm(patch_dirs, total=total_folders, desc="Processing folders", unit="folder"):
                 band_dict = create_band_dictionary()
+                tif_files = list(patch_path.glob('*.tif'))
 
-                tif_files = [f for f in os.listdir(
-                    patch_path) if f.endswith('.tif')]
-
+                # Since each folder only contains 12 images, no need for a tqdm here
                 for tif_file in tif_files:
                     # Extract band name (e.g., "B02") from filename
-                    band_name = tif_file.split('_')[-1].replace('.tif', '')
-                    arr = convert_tif_file_to_numpy_array(
-                        os.path.join(patch_path, tif_file))
+                    band_name = tif_file.stem.split('_')[-1]
+                    arr = convert_tif_file_to_numpy_array(tif_file)
 
                     # Assert that the band's resolution matches the expected resolution
                     assert band_name in expected_resolutions, f"Unexpected band name: {
@@ -89,7 +86,7 @@ def convert_ben_dataset_to_lmdb(ben_dataset_path, lmdb_dir):
                 tensor_bytes = save(band_dict)
 
                 # Use the folder name as the key
-                folder_name = os.path.basename(patch_path)
+                folder_name = patch_path.name
                 txn.put(folder_name.encode(), tensor_bytes)
 
 
@@ -120,10 +117,14 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
     metadata_df = pd.read_parquet(
         'untracked-files/BigEarthNet-Lithuania-Summer/lithuania_summer.parquet')
 
+    # Remove the country column as discussed
+    if 'country' in metadata_df.columns:
+        metadata_df = metadata_df.drop(columns=['country'])
+
     # Store as parquet file in output_parquet_path
     metadata_df.to_parquet(output_parquet_path)
 
-    # Count the number of samples in the dataset and the number of samples in each split.
+    # Count the number of samples in each split.
     num_train_samples = len(metadata_df[metadata_df['split'] == 'train'])
     num_validation_samples = len(
         metadata_df[metadata_df['split'] == 'validation'])
@@ -143,8 +144,7 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
 
 
 if __name__ == "__main__":
-    main(
-        input_data_path='untracked-files/BigEarthNet-Lithuania-Summer',
-        output_lmdb_path='untracked-files/datasets',
-        output_parquet_path='untracked-files/datasets/metadata/metadata_ben.parquet'
-    )
+    input_data_path = 'untracked-files/BigEarthNet-Lithuania-Summer'
+    output_lmdb_path = 'untracked-files/datasets/BigEarthNet'
+    output_parquet_path = 'untracked-files/datasets/BigEarthNet/metadata.parquet'
+    main(input_data_path, output_lmdb_path, output_parquet_path)

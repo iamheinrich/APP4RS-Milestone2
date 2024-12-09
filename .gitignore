@@ -2,5 +2,4 @@
 *pycache*
 *DS_Store*
 /untracked-files
-__init__.py
-metadata_exploration.py
+/dataset_conversion
