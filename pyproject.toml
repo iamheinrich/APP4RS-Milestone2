@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "milestone2"
+version = "0.1.0"
+description = "Milestone 2"
+authors = ["Mohamed <shokry@campus.tu-berlin.de>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "^2.1.0"
+rasterio = "^1.4.0"
+safetensors = "^0.4.5"
+pandas = "^2.2.0"
+lmdb = "^1.5.1"
+torch = { version = "2.3.0+cu118", source = "pytorch-cuda" }
+torchvision = { version = "0.18.0", source = "pytorch-cuda" }
+lightning = "^2.2.4"
+pyarrow = "^17.0.0"
+
+
+[[tool.poetry.source]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu118"
+priority = "explicit"
