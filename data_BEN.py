@@ -9,6 +9,8 @@ from torch.utils.data import IterableDataset
 
 
 # additional imports
+import pandas as pd
+from safetensors.numpy import load as safetensor_load
 
 
 def _hash(data):
@@ -39,7 +41,8 @@ BEN_CLASSES = [
 BEN_CLASSES.sort()
 assert len(BEN_CLASSES) == 19, f"Expected 19 classes, got {len(BEN_CLASSES)}"
 
-BEN_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B09", "B11", "B12", "B8A"]
+BEN_BANDS = ["B01", "B02", "B03", "B04", "B05",
+             "B06", "B07", "B08", "B09", "B11", "B12", "B8A"]
 
 
 class BENIndexableLMDBDataset(Dataset):
@@ -112,13 +115,33 @@ class BENIterableLMDBDataset(IterableDataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: Implement the constructor for the dataset.
-        # Hint: Be aware when to initialize what.
-        pass
+        # TODO: There are still quite a few open questions to consider:
+        # 2. We have to adapt the convert functions to ensure that the arrays stored per band are in the format (1, H, W)
+        # 3. We have to adapt this class accordingly.
+
+        self.lmdb_path = lmdb_path
+        self.metadata_parquet_path = metadata_parquet_path
+        self.bandorder = bandorder
+        self.split = split
+        self.transform = transform
+        self.with_keys = with_keys
+
+        # Load metadata and filter by split if provided to reduce memory usage
+        metadata = pd.read_parquet(self.metadata_parquet_path)
+        if self.split is not None:
+            metadata = metadata[metadata['split'] == self.split]
+
+        self.metadata = metadata
+        self.labels_dict = dict(
+            zip(metadata['patch_id'], metadata['labels']))  # O(1) lookup
+        self.keys = metadata['patch_id'].tolist()
+
+        # Check if all bands from bandorder are in BEN_BANDS
+        for band in self.bandorder:
+            assert band in BEN_BANDS, f"Band {band} not found in BEN_BANDS"
 
     def __len__(self):
-        # TODO: Implement the length of the dataset.
-        return ...
+        return len(self.metadata)
 
     def __iter__(self):
         """
@@ -127,8 +150,62 @@ class BENIterableLMDBDataset(IterableDataset):
         :return: an iterator over the dataset, e.g. via `yield` where each item is a (patch, label) tuple where patch is
             a tensor of shape (C, H, W) and label is a tensor of shape (N,)
         """
-        # TODO: Implement the iterator for the dataset.
-        return ...
+
+        # Create a connection to the lmdb file
+        env = lmdb.open(self.lmdb_path, readonly=True)
+
+        # Get worker info
+        worker_info = torch.utils.data.get_worker_info()
+
+        if worker_info is not None:
+            # Split workload so that each worker can process a different subset of the data.
+            # We can achieve this by determining the number of samples per worker.
+            per_worker = int(math.ceil(self.__len__() /
+                             float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, self.__len__())
+            iter_keys = self.keys[iter_start:iter_end]
+        else:
+            iter_keys = self.keys
+
+        with env.begin(write=False) as txn:
+            for key in iter_keys:
+                # Get the dict of bands for key (patch_id)
+                st = txn.get(key.encode())
+                assert st is not None, f"Key {key} not found in LMDB"
+                band_dict = safetensor_load(st)
+
+                # Check if the keys of the band dict are the same as the keys in BEN_BANDS
+                band_dict_keys = list(band_dict.keys())
+                assert set(band_dict_keys) == set(BEN_BANDS), f"Expected band dict keys to be {
+                    BEN_BANDS}, got {band_dict_keys}"
+
+                # Images/Arrays for each band are stored in a list.
+                # The first image corresponds to the first band in bandorder, the second to the second band, etc.
+                # Use np.stack to ensure that it fails if the dimensions of the arrays are not the same.
+                patch = np.stack([band_dict[band]
+                                 for band in self.bandorder], axis=0)
+
+                # Check if the dimensions of band arrays are 3 (C, H, W)
+                assert len(
+                    patch.shape) == 3, "Expected 3D array for band arrays"
+
+                # Apply the transform to torch tensor of band arrays if transform is provided
+                if self.transform:
+                    patch = self.transform(torch.from_numpy(patch))
+
+                # Convert labels to tensor of shape (N,) assuming that the label corresponds to the index of the class in BEN_CLASSES
+                # Labels is a list of strings, where each string corresponds to the class of the patch.
+                labels = self.labels_dict[key]
+                assert isinstance(
+                    labels, list), f"Expected labels to be a list, got {type(labels)}"
+
+                # Convert class labels to integers
+                labels = [BEN_CLASSES.index(label) for label in labels]
+                labels = torch.tensor(labels)
+
+                yield patch, labels
 
 
 class BENDataModule(LightningDataModule):
@@ -238,7 +315,8 @@ def main(
             ds_type = "IterableLMDB " if DS == BENIterableLMDBDataset \
                 else "IndexableTif " if DS == BENIndexableTifDataset \
                 else "IndexableLMDB"
-            print(f"{split}-{ds_type}: {_hash(total_str)} @ {time.time() - t0:.2f}s")
+            print(f"{split}-{ds_type}: {_hash(total_str)
+                                        } @ {time.time() - t0:.2f}s")
 
     print()
     for ds_type in ['indexable_lmdb', 'indexable_tif', 'iterable_lmdb']:
