@@ -67,9 +67,9 @@ def gather_metadata(input_data_path: str) -> pd.DataFrame:
             current_label = stem.split("_")[0]
             band_number = int(stem.split("_")[1])
 
-            if band_number < n_train:
+            if band_number <= n_train:
                 split = "train"
-            elif band_number < n_train + n_val:
+            elif band_number <= n_train + n_val:
                 split = "validation"
             else:
                 split = "test"
