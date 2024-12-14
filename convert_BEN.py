@@ -98,7 +98,7 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
     num_keys = count_samples_in_lmdb(output_lmdb_path)
 
     # Create metadata parquet file without country column - all lithuania anyways
-    metadata_df = pd.read_parquet('untracked-files/BigEarthNet-Lithuania-Summer/lithuania_summer.parquet')
+    metadata_df = pd.read_parquet(input_data_path + '/lithuania_summer.parquet')
     if 'country' in metadata_df.columns:
         metadata_df = metadata_df.drop(columns=['country'])
     metadata_df.to_parquet(output_parquet_path)
