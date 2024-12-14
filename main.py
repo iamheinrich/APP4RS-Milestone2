@@ -15,32 +15,35 @@ import train
 # on the server. For auto-tests, the _REF keys will be used to compare the results. For local tests, just set the
 # non-_REF keys and _REF keys to the same values.
 
-os.environ['EUROSAT_SRC'] = "/home/name/Downloads/EuroSAT_MS/"
-os.environ['EUROSAT_LMDB'] = "../untracked-files/EuroSAT.lmdb"
-os.environ['EUROSAT_LMDB_REF'] = "../untracked-files/EuroSAT.lmdb"  # GT, same as EUROSAT_LMDB
-os.environ['EUROSAT_PARQUET'] = "../untracked-files/EuroSAT.parquet"
-os.environ['EUROSAT_PARQUET_REF'] = "../untracked-files/EuroSAT.parquet"  # GT, same as EUROSAT_PARQUET
+"""
+os.environ['EUROSAT_SRC'] = "untracked-files/EuroSAT_MS/"
+os.environ['EUROSAT_LMDB'] = "untracked-files/datasets/EuroSAT.lmdb"
+os.environ['EUROSAT_LMDB_REF'] = "untracked-files/datasets/EuroSAT.lmdb"  # GT, same as EUROSAT_LMDB
+os.environ['EUROSAT_PARQUET'] = "untracked-files/datasets/EuroSAT.parquet"
+os.environ['EUROSAT_PARQUET_REF'] = "untracked-files/datasets/EuroSAT.parquet"  # GT, same as EUROSAT_PARQUET
 
-os.environ['BEN_SRC'] = "/home/name/Downloads/BigEarthNet-Lithuania-Summer/"
-os.environ['BEN_LMDB'] = "../untracked-files/BigEarthNet.lmdb"
-os.environ['BEN_LMDB_REF'] = "../untracked-files/BigEarthNet.lmdb"  # GT, same as BEN_LMDB
-os.environ['BEN_PARQUET'] = "../untracked-files/BigEarthNet.parquet"
-os.environ['BEN_PARQUET_REF'] = "../untracked-files/BigEarthNet.parquet"  # GT, same as BEN_PARQUET
+os.environ['BEN_SRC'] = "untracked-files/BigEarthNet-Lithuania-Summer/"
+os.environ['BEN_LMDB'] = "untracked-files/datasets/BigEarthNet.lmdb"
+os.environ['BEN_LMDB_REF'] = "untracked-files/datasets/BigEarthNet.lmdb"  # GT, same as BEN_LMDB
+os.environ['BEN_PARQUET'] = "untracked-files/datasets/BigEarthNet.parquet"
+os.environ['BEN_PARQUET_REF'] = "untracked-files/datasets/BigEarthNet.parquet"  # GT, same as BEN_PARQUET
 
 os.environ['BEN_BANDS'] = "['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12']"
 os.environ['EUROSAT_BANDS'] = "['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B10', 'B11', 'B12']"
 os.environ['BEN_SAMPLES'] = "[0, 15, 42, 150, 1231]"
 os.environ['EUROSAT_SAMPLES'] = "[0, 31, 84, 329, 1935]"
 os.environ['RANDOM_SEED'] = "42"
+
+"""
 # ================================================================================================================== #
 
 if __name__ == '__main__':
     test_conversion_ben = True
     test_conversion_eurosat = True
-    test_data_ben = True
-    test_data_eurosat = True
-    test_training_ben = True
-    test_training_eurosat = True
+    test_data_ben = False
+    test_data_eurosat = False
+    test_training_ben = False
+    test_training_eurosat = False
     # You may run your code here
 
     # ============================================== Don't change this ============================================== #

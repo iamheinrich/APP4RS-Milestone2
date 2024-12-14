@@ -24,7 +24,7 @@ expected_resolutions = {
 def convert_tif_file_to_numpy_array(tif_tile_path):
     # Convert a .tif file to a numpy array
     with rasterio.open(tif_tile_path) as tile:
-        return tile.read(1)
+        return tile.read() # Keep channel dimension!
 
 def create_band_dictionary():
     # Create a dict with keys from the expected_resolutions, initialized as empty arrays
@@ -46,10 +46,8 @@ def convert_ben_dataset_to_lmdb(ben_dataset_path, lmdb_dir):
         if any(file.endswith('.tif') for file in files):
             patch_dirs.append(root)
 
-    total_folders = len(patch_dirs)
-
     # Open the LMDB environment with a specified map size
-    # Map size is set to 3GB for BEN, as previously discussed
+    # Map size is set to 3GB for BEN
     with lmdb.open(lmdb_dir, map_size=int(3e9)) as env:
         with env.begin(write=True) as txn:
             # Iterate over all patch directories
@@ -65,7 +63,7 @@ def convert_ben_dataset_to_lmdb(ben_dataset_path, lmdb_dir):
                     # Assert that the band's resolution matches the expected resolution
                     assert band_name in expected_resolutions, f"Unexpected band name: {band_name}"
                     expected_res = expected_resolutions[band_name]
-                    assert arr.shape[0] == expected_res, (
+                    assert (arr.shape[0] == 1) and (arr.shape[1] == expected_res), (
                         f"Resolution mismatch for band {band_name}: expected {expected_res}, got {arr.shape[0]}"
                     )
 
@@ -122,6 +120,6 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
 
 if __name__ == "__main__":
     input_data_path = 'untracked-files/BigEarthNet-Lithuania-Summer'
-    output_lmdb_path = 'untracked-files/datasets/BigEarthNet'
-    output_parquet_path = 'untracked-files/datasets/BigEarthNet/metadata.parquet'
+    output_lmdb_path = 'untracked-files/datasets/BigEarthNet.lmdb'
+    output_parquet_path = 'untracked-files/datasets/metadata.parquet'
     main(input_data_path, output_lmdb_path, output_parquet_path)

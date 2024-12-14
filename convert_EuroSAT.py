@@ -4,22 +4,6 @@ import lmdb
 import os
 import pandas as pd
 
-BAND_DICT = {
-    'B01': None,
-    'B02': None,
-    'B03': None,
-    'B04': None,
-    'B05': None,
-    'B06': None,
-    'B07': None,
-    'B08': None,
-    'B09': None,
-    'B10': None,
-    'B11': None,
-    'B12': None,
-    'B8A': None
-}
-
 def get_band_safetensor_from_tif(tif_path):
     with rasterio.open(tif_path) as src:
         tmp_band_dict = {}
@@ -33,25 +17,27 @@ def convert_eurosat_dataset_to_lmdb(eurosat_dataset_path, lmdb_dir):
     """
     Convert the EuroSAT dataset to an LMDB database of safetensors.
     """
-    if not os.path.exists(lmdb_dir):
-        os.makedirs(lmdb_dir)
+    os.makedirs(
+        os.path.dirname(lmdb_dir), # .dirname turns untracked-files/datasets/EuroSAT.lmdb -> untracked-files/datasets, no problem because lmdb creats .lmdb dir
+        exist_ok=True
+    )
 
-    label_folders = [
+    label_folder_paths = [
         os.path.join(eurosat_dataset_path, d) for d in os.listdir(eurosat_dataset_path)
         if os.path.isdir(os.path.join(eurosat_dataset_path, d))
     ]
 
     with lmdb.open(lmdb_dir, map_size=int(1e12)) as env:
         with env.begin(write=True) as txn:
-            for label_folder in label_folders:
-                tif_files = [
-                    os.path.join(label_folder, f) for f in os.listdir(label_folder)
+            for label_folder_path in label_folder_paths:
+                tif_file_paths = [
+                    os.path.join(label_folder_path, f) for f in os.listdir(label_folder_path)
                     if f.endswith('.tif')
                 ]
 
-                for tif_file in tif_files:
-                    st = get_band_safetensor_from_tif(tif_file)
-                    txn.put(os.path.basename(tif_file).encode(), st)
+                for tif_file_path in tif_file_paths:
+                    st = get_band_safetensor_from_tif(tif_file_path)
+                    txn.put(os.path.basename(tif_file_path).removesuffix(".tif").encode(), st)
 
 
 def gather_metadata(input_data_path: str) -> pd.DataFrame:
@@ -59,43 +45,43 @@ def gather_metadata(input_data_path: str) -> pd.DataFrame:
     Gather metadata for the EuroSAT dataset.
     For each class folder, assign 70% train, 15% validation, 15% test splits based on file index.
     """
-    label_folders = [
+    label_folder_paths = [
         os.path.join(input_data_path, d) for d in os.listdir(input_data_path)
         if os.path.isdir(os.path.join(input_data_path, d))
     ]
 
-    all_entries = []
-    for label_folder in label_folders:
-        label = os.path.basename(label_folder)
-
-        tif_files = [
-            os.path.join(label_folder, f) for f in os.listdir(label_folder)
+    all_entries_metadata = []
+    for label_folder_path in label_folder_paths:
+        tif_paths = [
+            os.path.join(label_folder_path, f) for f in os.listdir(label_folder_path)
             if f.endswith('.tif')
         ]
 
-        n = len(tif_files)
+        n = len(tif_paths)
         n_train = int(n * 0.7)
         n_val = int(n * 0.15)
 
-        for i, tif_path in enumerate(tif_files):
-            stem = os.path.splitext(os.path.basename(tif_path))[0]
+        # input_data_path -> label_folder_paths -> tif_paths
+        for tif_path in tif_paths:
+            stem = os.path.basename(tif_path).removesuffix(".tif")
             current_label = stem.split("_")[0]
+            band_number = int(stem.split("_")[1])
 
-            if i < n_train:
+            if band_number < n_train:
                 split = "train"
-            elif i < n_train + n_val:
+            elif band_number < n_train + n_val:
                 split = "validation"
             else:
                 split = "test"
 
-            all_entries.append({
+            all_entries_metadata.append({
                 'class_name': current_label,
                 'patch_name': os.path.basename(tif_path).removesuffix(".tif"),
                 'split': split
             })
 
-    df = pd.DataFrame(all_entries)
-    return df
+    metadata_df = pd.DataFrame(all_entries_metadata)
+    return metadata_df
 
 def store_metadata(df, output_parquet_path):
     """
@@ -107,6 +93,12 @@ def store_metadata(df, output_parquet_path):
     )
     df.to_parquet(output_parquet_path, index=False)
 
+def count_samples_in_lmdb(lmdb_path):
+    """Count the number of samples in the LMDB database."""
+    with lmdb.open(lmdb_path, readonly=True) as env:
+        with env.begin() as txn:
+            return txn.stat()['entries']
+
 def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
     """
     Convert the EuroSAT dataset to lmdb and parquet format.
@@ -116,20 +108,21 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
     :param output_parquet_path: path to the destination EuroSAT parquet file
     :return: None
     """
-    # Gather metadata
     metadata = gather_metadata(input_data_path)
-
-    # Store metadata
     store_metadata(metadata, output_parquet_path)
-
-    # Convert data to LMDB
     convert_eurosat_dataset_to_lmdb(input_data_path, output_lmdb_path)
+    
+    num_keys = count_samples_in_lmdb(output_lmdb_path)
 
     # Print the number of samples in the dataset and the number of samples in each split.
-    num_keys = len(metadata)
     num_train_samples = len(metadata[metadata['split'] == 'train'])
     num_validation_samples = len(metadata[metadata['split'] == 'validation'])
     num_test_samples = len(metadata[metadata['split'] == 'test'])
+
+    assert num_keys == num_train_samples + num_validation_samples + num_test_samples, (
+        f"The number of keys in the LMDB database is {num_keys} which is not equal to "
+        f"the number of samples in the dataset {num_train_samples + num_validation_samples + num_test_samples}"
+    )
 
     print(f"#samples: {num_keys}")
     print(f"#samples_train: {num_train_samples}")
@@ -138,6 +131,6 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
 
 if __name__ == "__main__":
     input_data_path = 'untracked-files/EuroSAT_MS'
-    output_lmdb_path = 'untracked-files/datasets/EuroSAT'
-    output_parquet_path = 'untracked-files/datasets/EuroSAT/metadata.parquet'
+    output_lmdb_path = 'untracked-files/datasets/EuroSAT.lmdb'
+    output_parquet_path = 'untracked-files/datasets/metadata.parquet'
     main(input_data_path, output_lmdb_path, output_parquet_path)
