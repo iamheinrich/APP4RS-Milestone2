@@ -37,7 +37,7 @@ EUROSAT_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06",
                  "B07", "B08", "B09", "B10", "B11", "B12", "B8A"]
 
 def resize_band(uint16band): 
-    band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
+    band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
     band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
     return band_tensor_resized
 
@@ -94,7 +94,7 @@ class EuroSATIndexableLMDBDataset(Dataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        self.lmdb_path = lmdb_path                                  #TODO this is the path to .lmdb not the .mdb inside it!!!
+        self.lmdb_path = lmdb_path                                  
         self.bandorder = bandorder
         self.transform = transform
 
@@ -104,7 +104,7 @@ class EuroSATIndexableLMDBDataset(Dataset):
 
         # LMDB env will be initialized in worker processes to avoid parallel access issues
         self.env = None
-        self.lmdb_path = lmdb_path                                  #TODO this is the path to .lmdb not the .mdb inside it!!!
+        self.lmdb_path = lmdb_path                                  
         self.bandorder = bandorder
         self.transform = transform
 
@@ -170,7 +170,7 @@ class EuroSATIndexableTifDataset(Dataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        self.base_path = base_path                          #TODO this leads to parent dir of BigEarthNet-Lithuania-Summer-S2 dir
+        self.base_path = base_path                         
         self.bandorder = bandorder
         self.transform = transform
 
@@ -203,7 +203,7 @@ class EuroSATIndexableTifDataset(Dataset):
                 assert isinstance(band_name, str), f"Band name must be a string, got {type(band_name)}"
                 assert band_name in EUROSAT_BANDS, f"Band {band_name} not found in EUROSAT_BANDS"
                 band_number = 1 + EUROSAT_BANDS.index(band_name)
-                resized_bands.append(resize_band_SAT_tif(src.read(band_number))) #TODO welche dim?, unsqueeze0
+                resized_bands.append(resize_band_SAT_tif(src.read(band_number))) 
         patch = torch.cat(resized_bands)
         if self.transform:
             patch = self.transform(patch)

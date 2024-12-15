@@ -168,7 +168,7 @@ class BENIndexableTifDataset(Dataset):
         for band_name in self.bandorder:
             tif_path = f"{path_to_patch}/{item_patch_name}_{band_name}.tif"
             with rasterio.open(tif_path) as src:
-                resized_bands.append(resize_band(src.read()))                    #TODO not src.read(1) because of shape to enable stacking
+                resized_bands.append(resize_band(src.read()))                    
 
         # Cat instead of stacking, "useless" channel dim
         patch = torch.cat(resized_bands)
@@ -280,7 +280,7 @@ class BENIterableLMDBDataset(IterableDataset):
                 # Convert class labels to one-hot encoded tensor
                 index_labels = labels_to_onehot(labels)
 
-                yield patch, labels
+                yield patch, index_labels
 
 
 class BENDataModule(LightningDataModule):

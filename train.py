@@ -106,6 +106,7 @@ def main(
     :param metadata_parquet_path: the path to the metadata parquet file
     :return: the trained model
     """
+    
     # Making sure we are as reproducible as possible
     SEED = 42
     random.seed(SEED)
