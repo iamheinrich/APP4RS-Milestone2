@@ -104,6 +104,16 @@ class EuroSATIndexableLMDBDataset(Dataset):
 
         # LMDB env will be initialized in worker processes to avoid parallel access issues
         self.env = None
+        self.lmdb_path = lmdb_path                                  #TODO this is the path to .lmdb not the .mdb inside it!!!
+        self.bandorder = bandorder
+        self.transform = transform
+
+        self.metadata = pd.read_parquet(metadata_parquet_path)
+        if split:
+            self.metadata = self.metadata[self.metadata['split'] == split]
+
+        # LMDB env will be initialized in worker processes to avoid parallel access issues
+        self.env = None
 
     def __len__(self):
         return len(self.metadata)
@@ -161,6 +171,7 @@ class EuroSATIndexableTifDataset(Dataset):
         self.base_path = base_path                          #TODO this leads to parent dir of BigEarthNet-Lithuania-Summer-S2 dir
         self.bandorder = bandorder
         self.transform = transform
+
         self.metadata = gather_metadata(base_path)
         if split:
             self.metadata = self.metadata[self.metadata['split'] == split]
