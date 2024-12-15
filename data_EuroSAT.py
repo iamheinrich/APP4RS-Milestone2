@@ -102,10 +102,53 @@ class EuroSATIndexableLMDBDataset(Dataset):
 
         return reconstructed_patch, index_labels
 
-def resize_band(uint16band) -> torch.float32: 
+def resize_band(uint16band): 
     band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
     band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
     return band_tensor_resized
+
+def gather_metadata(input_data_path: str) -> pd.DataFrame:
+    """
+    Gather metadata for the EuroSAT dataset.
+    For each class folder, assign 70% train, 15% validation, 15% test splits based on file index.
+    """
+    label_folder_paths = [
+        os.path.join(input_data_path, d) for d in os.listdir(input_data_path)
+        if os.path.isdir(os.path.join(input_data_path, d))
+    ]
+
+    all_entries_metadata = []
+    for label_folder_path in label_folder_paths:
+        tif_paths = [
+            os.path.join(label_folder_path, f) for f in os.listdir(label_folder_path)
+            if f.endswith('.tif')
+        ]
+
+        n = len(tif_paths)
+        n_train = int(n * 0.7)
+        n_val = int(n * 0.15)
+
+        # input_data_path -> label_folder_paths -> tif_paths
+        for tif_path in tif_paths:
+            stem = os.path.basename(tif_path).removesuffix(".tif")
+            current_label = stem.split("_")[0]
+            band_number = int(stem.split("_")[1])
+
+            if band_number <= n_train:
+                split = "train"
+            elif band_number <= n_train + n_val:
+                split = "validation"
+            else:
+                split = "test"
+
+            all_entries_metadata.append({
+                'class_name': current_label,
+                'patch_name': os.path.basename(tif_path).removesuffix(".tif"),
+                'split': split
+            })
+
+    metadata_df = pd.DataFrame(all_entries_metadata)
+    return metadata_df
 
 class EuroSATIndexableTifDataset(Dataset):
     def __init__(self, base_path: str, bandorder: List, split=None, transform=None):
@@ -117,14 +160,16 @@ class EuroSATIndexableTifDataset(Dataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: Implement the constructor for the dataset.
-        # Hint: Be aware when to initialize what.
-        # Hint: You don't have metadata. Where do you get the labels from? How do you split the dataset?
-        pass
+        self.base_path = base_path                          #TODO this leads to parent dir of BigEarthNet-Lithuania-Summer-S2 dir
+        self.bandorder = bandorder
+        self.transform = transform
+
+        self.metadata = gather_metadata(base_path)
+        if split:
+            self.metadata = self.metadata[self.metadata['split'] == split]
 
     def __len__(self):
-        # TODO: Implement the length of the dataset.
-        return ...
+        return len(self.metadata)
 
     def __getitem__(self, idx):
         """
@@ -133,8 +178,37 @@ class EuroSATIndexableTifDataset(Dataset):
         :param idx: index of the item to get
         :return: (patch, label) tuple where patch is a tensor of shape (C, H, W) and label is a tensor of shape (N,)
         """
-        # TODO: Implement the __getitem__ method for the dataset.
-        return ...
+        # Get item's metadata
+        metadata_row = self.metadata.iloc[idx]
+        item_patch_name = metadata_row['patch_name']
+        item_labels = [metadata_row['class_name']]
+
+        slash = "" if (self.base_path[-1] == "/") else "/"
+        path_to_patch = f"{self.base_path}{slash}{item_labels}/{item_patch_name}.tif"
+
+        resized_bands = []
+
+        # Select bands in bandorder as in method argument
+        with rasterio.open(path_to_patch) as src:
+            for band_name in self.bandorder:
+                band_number = 1 + EUROSAT_BANDS.index(band_name)
+                resized_bands.append(resize_band_SAT_tif(src.read(band_number))) #TODO welche dim?, unsqueeze0
+
+        patch = torch.cat(resized_bands)
+
+        if self.transform:
+            patch = self.transform(patch)
+
+        index_labels = [EUROSAT_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
+
+        return patch, index_labels
+
+def resize_band_SAT_tif(uint16band): 
+    band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
+    return band_tensor_resized
+
 
 
 class EuroSATIterableLMDBDataset(IterableDataset):
