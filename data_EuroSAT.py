@@ -6,7 +6,14 @@ import torch
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import Dataset
 from torch.utils.data import IterableDataset
+
+# additional imports
 import pandas as pd
+import numpy as np
+import lmdb
+import rasterio
+from safetensors.numpy import load as safetensor_load
+import math
 
 
 def _hash(data):
@@ -42,13 +49,19 @@ class EuroSATIndexableLMDBDataset(Dataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: Implement the constructor for the dataset.
-        # Hint: Be aware when to initialize what.
-        pass
+        self.lmdb_path = lmdb_path                                  #TODO this is the path to .lmdb not the .mdb inside it!!!
+        self.bandorder = bandorder
+        self.transform = transform
+
+        self.metadata = pd.read_parquet(metadata_parquet_path)
+        if split:
+            self.metadata = self.metadata[self.metadata['split'] == split]
+
+        # LMDB env will be initialized in worker processes to avoid parallel access issues
+        self.env = None
 
     def __len__(self):
-        # TODO: Do this
-        pass
+        return len(self.metadata)
 
     def __getitem__(self, idx):
         """
@@ -57,9 +70,42 @@ class EuroSATIndexableLMDBDataset(Dataset):
         :param idx: index of the item to get
         :return: (patch, label) tuple where patch is a tensor of shape (C, H, W) and label is a tensor of shape (N,)
         """
-        # TODO: Implement the __getitem__ method for the dataset.
-        return ...
+        # Open LMDB in current worker process if it wasn't opened through previous getitem call
+        if self.env is None:
+            self.env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
 
+        # Get item's metadata
+        metadata_row = self.metadata.iloc[idx]
+        item_patch_name = metadata_row['patch_name']
+        item_labels = [metadata_row['class_name']]
+
+        # Find item safetensor in lmdb through metadata
+        with self.env.begin() as txn:
+            tensor_bytes = txn.get(item_patch_name.encode())
+
+        # Safetensor bytes to dict
+        band_dict = safetensor_load(tensor_bytes)
+
+        # Cat instead of stack selected bands
+        resized_bands = []
+        for band_name in self.bandorder:
+            resized_bands.append(resize_band(band_dict[band_name]))
+
+        reconstructed_patch = torch.cat(resized_bands)
+        
+        if self.transform:
+            reconstructed_patch = self.transform(reconstructed_patch)
+
+        # Convert class labels to integers
+        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
+
+        return reconstructed_patch, index_labels
+
+def resize_band(uint16band) -> torch.float32: 
+    band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
+    band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
+    return band_tensor_resized
 
 class EuroSATIndexableTifDataset(Dataset):
     def __init__(self, base_path: str, bandorder: List, split=None, transform=None):
