@@ -107,10 +107,13 @@ class BENIndexableLMDBDataset(Dataset):
         if self.transform:
             reconstructed_patch = self.transform(reconstructed_patch)
 
-        return reconstructed_patch, item_labels
+        # Convert class labels to integers
+        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
 
+        return reconstructed_patch, index_labels
 
-def resize_band(uint16band) -> torch.float32: 
+def resize_band(uint16band): 
     band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
     band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
     return band_tensor_resized
@@ -129,8 +132,8 @@ class BENIndexableTifDataset(Dataset):
         self.bandorder = bandorder
         self.transform = transform
 
-
-        self.metadata = pd.read_parquet(base_path + "lithuania_summer.parquet")
+        slash = "" if (base_path[-1] == "/") else "/"
+        self.metadata = pd.read_parquet(base_path + slash + "lithuania_summer.parquet")
         if split:
             self.metadata = self.metadata[self.metadata['split'] == split]
 
@@ -149,7 +152,7 @@ class BENIndexableTifDataset(Dataset):
         item_patch_name = metadata_row['patch_id']
         item_labels = metadata_row['labels']
 
-        path_to_patch = f"{self.base_path}BigEarthNet-Lithuania-Summer-S2/{item_patch_name[:-6]}/{item_patch_name}"
+        path_to_patch = f"{self.base_path}/BigEarthNet-Lithuania-Summer-S2/{item_patch_name[:-6]}/{item_patch_name}"
 
         resized_bands = []
 
@@ -165,7 +168,11 @@ class BENIndexableTifDataset(Dataset):
         if self.transform:
             patch = self.transform(patch)
 
-        return patch, item_labels
+        # Convert class labels to integers
+        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
+
+        return patch, index_labels
 
 
 class BENIterableLMDBDataset(IterableDataset):
@@ -197,8 +204,7 @@ class BENIterableLMDBDataset(IterableDataset):
             metadata = metadata[metadata['split'] == self.split]
 
         self.metadata = metadata
-        self.labels_dict = dict(
-            zip(metadata['patch_id'], metadata['labels']))  # O(1) lookup
+        self.labels_dict = dict(zip(metadata['patch_id'], metadata['labels']))  # O(1) lookup
         self.keys = metadata['patch_id'].tolist()
 
         # Check if all bands from bandorder are in BEN_BANDS
@@ -225,8 +231,7 @@ class BENIterableLMDBDataset(IterableDataset):
         if worker_info is not None:
             # Split workload so that each worker can process a different subset of the data.
             # We can achieve this by determining the number of samples per worker.
-            per_worker = int(math.ceil(self.__len__() /
-                             float(worker_info.num_workers)))
+            per_worker = int(math.ceil(self.__len__() /float(worker_info.num_workers)))
             worker_id = worker_info.id
             iter_start = worker_id * per_worker
             iter_end = min(iter_start + per_worker, self.__len__())
@@ -243,19 +248,16 @@ class BENIterableLMDBDataset(IterableDataset):
 
                 # Check if the keys of the band dict are the same as the keys in BEN_BANDS
                 band_dict_keys = list(band_dict.keys())
-                assert set(band_dict_keys) == set(BEN_BANDS), f"Expected band dict keys to be {
-                    BEN_BANDS}, got {band_dict_keys}"
+                assert set(band_dict_keys) == set(BEN_BANDS), f"Expected band dict keys to be {BEN_BANDS}, got {band_dict_keys}"
 
                 # Images/Arrays for each band are stored in a list.
                 # The first image corresponds to the first band in bandorder, the second to the second band, etc.
                 # Use np.stack to ensure that it fails if the dimensions of the arrays are not the same.
-                patch = torch.cat([resize_band(band_dict[band])
-                                 for band in self.bandorder])
+                patch = torch.cat([resize_band(band_dict[band])for band in self.bandorder])
 
 
                 # Check if the dimensions of band arrays are 3 (C, H, W)
-                assert len(
-                    patch.shape) == 3, "Expected 3D array for band arrays"
+                assert len(patch.shape) == 3, "Expected 3D array for band arrays"
 
                 # Apply the transform to torch tensor of band arrays if transform is provided
                 if self.transform:
@@ -264,8 +266,8 @@ class BENIterableLMDBDataset(IterableDataset):
                 # Convert labels to tensor of shape (N,) assuming that the label corresponds to the index of the class in BEN_CLASSES
                 # Labels is a list of strings, where each string corresponds to the class of the patch.
                 labels = self.labels_dict[key]
-                assert isinstance(
-                    labels, list), f"Expected labels to be a list, got {type(labels)}"
+                # Check if numpy array contains strings as labels
+                assert all(isinstance(label, str) for label in labels), f"Expected labels to be a list of strings, got {labels.dtype}"
 
                 # Convert class labels to integers
                 labels = [BEN_CLASSES.index(label) for label in labels]
@@ -297,24 +299,64 @@ class BENDataModule(LightningDataModule):
         :param metadata_parquet_path: path to the metadata parquet file, for lmdb dataset
         """
         super().__init__()
-        # TODO: Store the parameters as attributes as needed.
-        pass
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.bandorder = bandorder
+        self.ds_type = ds_type
+        self.base_path = base_path
+        self.lmdb_path = lmdb_path
+        self.metadata_parquet_path = metadata_parquet_path
 
     def setup(self, stage=None):
-        # TODO: Create dataset objects for the train, validation and test splits.
-        pass
-
+        # Based on ds_type, select the appropriate dataset class and keyword args
+        if self.ds_type == 'iterable_lmdb':
+            DS = BENIterableLMDBDataset
+            ds_kwargs = {
+                'lmdb_path': self.lmdb_path,
+                'metadata_parquet_path': self.metadata_parquet_path,
+                'bandorder': self.bandorder
+            }
+        elif self.ds_type == 'indexable_tif':
+            DS = BENIndexableTifDataset
+            ds_kwargs = {
+                'base_path': self.base_path,
+                'bandorder': self.bandorder
+            }
+        elif self.ds_type == 'indexable_lmdb':
+            DS = BENIndexableLMDBDataset
+            ds_kwargs = {
+                'lmdb_path': self.lmdb_path,
+                'metadata_parquet_path': self.metadata_parquet_path,
+                'bandorder': self.bandorder
+            }
+        else:
+            raise ValueError(f"Unknown ds_type: {self.ds_type}")
+        
+        # Create dataset objects for train, validation and test splits
+        self.train_dataset = DS(split='train', **ds_kwargs)
+        self.val_dataset = DS(split='validation', **ds_kwargs)
+        self.test_dataset = DS(split='test', **ds_kwargs)
+        
     def train_dataloader(self):
-        # TODO: Return a DataLoader for the training dataset with the correct parameters for training neural networks.
-        return ...
+        return torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )
 
     def val_dataloader(self):
-        # TODO: Return a DataLoader for the validation dataset with the correct parameters for training neural networks.
-        return ...
+        return torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )
 
     def test_dataloader(self):
-        # TODO: Return a DataLoader for the test dataset with the correct parameters for training neural networks.
-        return ...
+        return torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )
 
 
 ############################################ DON'T CHANGE CODE BELOW HERE ############################################
@@ -381,8 +423,7 @@ def main(
             ds_type = "IterableLMDB " if DS == BENIterableLMDBDataset \
                 else "IndexableTif " if DS == BENIndexableTifDataset \
                 else "IndexableLMDB"
-            print(f"{split}-{ds_type}: {_hash(total_str)
-                                        } @ {time.time() - t0:.2f}s")
+            print(f"{split}-{ds_type}: {_hash(total_str)} @ {time.time() - t0:.2f}s")
 
     print()
     for ds_type in ['indexable_lmdb', 'indexable_tif', 'iterable_lmdb']:

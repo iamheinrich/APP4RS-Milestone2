@@ -6,9 +6,15 @@ import torch
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import Dataset
 from torch.utils.data import IterableDataset
+
+# additional imports
 import pandas as pd
-
-
+import numpy as np
+import lmdb
+import rasterio
+from safetensors.numpy import load as safetensor_load
+import math
+import os
 def _hash(data):
     return md5(str(data).encode()).hexdigest()
 
@@ -30,7 +36,53 @@ EUROSAT_CLASSES.sort()
 EUROSAT_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06",
                  "B07", "B08", "B09", "B10", "B11", "B12", "B8A"]
 
+def resize_band(uint16band): 
+    band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
+    band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
+    return band_tensor_resized
 
+def resize_band_SAT_tif(uint16band): 
+    band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
+    return band_tensor_resized
+
+
+def gather_metadata(input_data_path: str) -> pd.DataFrame:
+    """
+    Gather metadata for the EuroSAT dataset.
+    For each class folder, assign 70% train, 15% validation, 15% test splits based on file index.
+    """
+    label_folder_paths = [
+        os.path.join(input_data_path, d) for d in os.listdir(input_data_path)
+        if os.path.isdir(os.path.join(input_data_path, d))
+    ]
+    all_entries_metadata = []
+    for label_folder_path in label_folder_paths:
+        tif_paths = [
+            os.path.join(label_folder_path, f) for f in os.listdir(label_folder_path)
+            if f.endswith('.tif')
+        ]
+        n = len(tif_paths)
+        n_train = int(n * 0.7)
+        n_val = int(n * 0.15)
+        # input_data_path -> label_folder_paths -> tif_paths
+        for tif_path in tif_paths:
+            stem = os.path.basename(tif_path).removesuffix(".tif")
+            current_label = stem.split("_")[0]
+            band_number = int(stem.split("_")[1])
+            if band_number <= n_train:
+                split = "train"
+            elif band_number <= n_train + n_val:
+                split = "validation"
+            else:
+                split = "test"
+            all_entries_metadata.append({
+                'class_name': current_label,
+                'patch_name': os.path.basename(tif_path).removesuffix(".tif"),
+                'split': split
+            })
+    metadata_df = pd.DataFrame(all_entries_metadata)
+    return metadata_df
 class EuroSATIndexableLMDBDataset(Dataset):
     def __init__(self, lmdb_path: str, metadata_parquet_path: str, bandorder: List, split=None, transform=None):
         """
@@ -42,13 +94,19 @@ class EuroSATIndexableLMDBDataset(Dataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: Implement the constructor for the dataset.
-        # Hint: Be aware when to initialize what.
-        pass
+        self.lmdb_path = lmdb_path                                  #TODO this is the path to .lmdb not the .mdb inside it!!!
+        self.bandorder = bandorder
+        self.transform = transform
+
+        self.metadata = pd.read_parquet(metadata_parquet_path)
+        if split:
+            self.metadata = self.metadata[self.metadata['split'] == split]
+
+        # LMDB env will be initialized in worker processes to avoid parallel access issues
+        self.env = None
 
     def __len__(self):
-        # TODO: Do this
-        pass
+        return len(self.metadata)
 
     def __getitem__(self, idx):
         """
@@ -57,8 +115,37 @@ class EuroSATIndexableLMDBDataset(Dataset):
         :param idx: index of the item to get
         :return: (patch, label) tuple where patch is a tensor of shape (C, H, W) and label is a tensor of shape (N,)
         """
-        # TODO: Implement the __getitem__ method for the dataset.
-        return ...
+        # Open LMDB in current worker process if it wasn't opened through previous getitem call
+        if self.env is None:
+            self.env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
+
+        # Get item's metadata
+        metadata_row = self.metadata.iloc[idx]
+        item_patch_name = metadata_row['patch_name']
+        item_labels = [metadata_row['class_name']]
+
+        # Find item safetensor in lmdb through metadata
+        with self.env.begin() as txn:
+            tensor_bytes = txn.get(item_patch_name.encode())
+
+        # Safetensor bytes to dict
+        band_dict = safetensor_load(tensor_bytes)
+
+        # Cat instead of stack selected bands
+        resized_bands = []
+        for band_name in self.bandorder:
+            resized_bands.append(resize_band(band_dict[band_name]))
+
+        reconstructed_patch = torch.cat(resized_bands)
+        
+        if self.transform:
+            reconstructed_patch = self.transform(reconstructed_patch)
+
+        # Convert class labels to integers
+        index_labels = [EUROSAT_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
+
+        return reconstructed_patch, index_labels
 
 
 class EuroSATIndexableTifDataset(Dataset):
@@ -71,14 +158,15 @@ class EuroSATIndexableTifDataset(Dataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: Implement the constructor for the dataset.
-        # Hint: Be aware when to initialize what.
-        # Hint: You don't have metadata. Where do you get the labels from? How do you split the dataset?
-        pass
+        self.base_path = base_path                          #TODO this leads to parent dir of BigEarthNet-Lithuania-Summer-S2 dir
+        self.bandorder = bandorder
+        self.transform = transform
+        self.metadata = gather_metadata(base_path)
+        if split:
+            self.metadata = self.metadata[self.metadata['split'] == split]
 
     def __len__(self):
-        # TODO: Implement the length of the dataset.
-        return ...
+        return len(self.metadata)
 
     def __getitem__(self, idx):
         """
@@ -87,9 +175,27 @@ class EuroSATIndexableTifDataset(Dataset):
         :param idx: index of the item to get
         :return: (patch, label) tuple where patch is a tensor of shape (C, H, W) and label is a tensor of shape (N,)
         """
-        # TODO: Implement the __getitem__ method for the dataset.
-        return ...
-
+       # Get item's metadata
+        metadata_row = self.metadata.iloc[idx]
+        item_patch_name = metadata_row['patch_name']
+        item_labels = [metadata_row['class_name']]
+        slash = "" if (self.base_path[-1] == "/") else "/"
+        path_to_patch = f"{self.base_path}{slash}{item_labels[0]}/{item_patch_name}.tif"
+        resized_bands = []
+        # Select bands in bandorder as in method argument
+        with rasterio.open(path_to_patch) as src:
+            for band_name in self.bandorder:
+                assert isinstance(band_name, str), f"Band name must be a string, got {type(band_name)}"
+                assert band_name in EUROSAT_BANDS, f"Band {band_name} not found in EUROSAT_BANDS"
+                band_number = 1 + EUROSAT_BANDS.index(band_name)
+                resized_bands.append(resize_band_SAT_tif(src.read(band_number))) #TODO welche dim?, unsqueeze0
+        patch = torch.cat(resized_bands)
+        if self.transform:
+            patch = self.transform(patch)
+        index_labels = [EUROSAT_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
+        return patch, index_labels
+    
 
 class EuroSATIterableLMDBDataset(IterableDataset):
     def __init__(self, lmdb_path: str, metadata_parquet_path: str, bandorder: List, split=None, transform=None,
@@ -167,28 +273,24 @@ class EuroSATIterableLMDBDataset(IterableDataset):
 
                 # Check if the keys of the band dict are the same as the keys in EUROSAT_BANDS
                 band_dict_keys = list(band_dict.keys())
-                assert set(band_dict_keys) == set(self.EUROSAT_BANDS), f"Expected band dict keys to be {
-                    self.EUROSAT_BANDS}, got {band_dict_keys}"
+                assert set(band_dict_keys) == set(EUROSAT_BANDS), f"Expected band dict keys to be {EUROSAT_BANDS}, got {band_dict_keys}"
 
                 # Images/Arrays for each band are stored in a list.
                 # The first image corresponds to the first band in bandorder, the second to the second band, etc.
                 # Use np.stack to ensure that it fails if the dimensions of the arrays are not the same.
-                patch = np.stack([band_dict[band]
-                                 for band in self.bandorder], axis=0)
+                patch = torch.cat([resize_band(band_dict[band])for band in self.bandorder])
 
                 # Check if the dimensions of band arrays are 3 (C, H, W)
-                assert len(
-                    patch.shape) == 3, "Expected 3D array for band arrays"
+                assert len(patch.shape) == 3, "Expected 3D array for band arrays"
 
                 # Apply the transform to torch tensor of band arrays if transform is provided
                 if self.transform:
                     patch = self.transform(torch.from_numpy(patch))
 
-                # Convert labels to tensor of shape (N,) assuming that the label corresponds to the index of the class in BEN_CLASSES
+                # Convert labels to tensor of shape (N,) assuming that the label corresponds to the index of the class in EUROSAT_CLASSES
                 # Labels is a list of strings, where each string corresponds to the class of the patch.
                 class_name = self.class_dict[key]
-                assert isinstance(
-                    class_name, str), f"Expected class name to be a string, got {type(class_name)}"
+                assert isinstance(class_name, str), f"Expected class name to be a string, got {type(class_name)}"
 
                 # Convert class labels to integers
                 class_id = EUROSAT_CLASSES.index(class_name)
@@ -220,24 +322,64 @@ class EuroSATDataModule(LightningDataModule):
         :param metadata_parquet_path: path to the metadata parquet file, for lmdb dataset
         """
         super().__init__()
-        # TODO: Store the parameters as attributes as needed.
-        pass
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.bandorder = bandorder
+        self.ds_type = ds_type
+        self.base_path = base_path
+        self.lmdb_path = lmdb_path
+        self.metadata_parquet_path = metadata_parquet_path
 
     def setup(self, stage=None):
-        # TODO: Create dataset objects for the train, validation and test splits.
-        pass
-
+        # Based on ds_type, select the appropriate dataset class and keyword args
+        if self.ds_type == 'iterable_lmdb':
+            DS = EuroSATIterableLMDBDataset
+            ds_kwargs = {
+                'lmdb_path': self.lmdb_path,
+                'metadata_parquet_path': self.metadata_parquet_path,
+                'bandorder': self.bandorder
+            }
+        elif self.ds_type == 'indexable_tif':
+            DS = EuroSATIndexableTifDataset
+            ds_kwargs = {
+                'base_path': self.base_path,
+                'bandorder': self.bandorder
+            }
+        elif self.ds_type == 'indexable_lmdb':
+            DS = EuroSATIndexableLMDBDataset
+            ds_kwargs = {
+                'lmdb_path': self.lmdb_path,
+                'metadata_parquet_path': self.metadata_parquet_path,
+                'bandorder': self.bandorder
+            }
+        else:
+            raise ValueError(f"Unknown ds_type: {self.ds_type}")
+        
+        # Create dataset objects for train, validation and test splits
+        self.train_dataset = DS(split='train', **ds_kwargs)
+        self.val_dataset = DS(split='validation', **ds_kwargs)
+        self.test_dataset = DS(split='test', **ds_kwargs)
+        
     def train_dataloader(self):
-        # TODO: Return a DataLoader for the training dataset with the correct parameters for training neural networks.
-        return ...
+        return torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )
 
     def val_dataloader(self):
-        # TODO: Return a DataLoader for the validation dataset with the correct parameters for training neural networks.
-        return ...
+        return torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )
 
     def test_dataloader(self):
-        # TODO: Return a DataLoader for the test dataset with the correct parameters for training neural networks.
-        return ...
+        return torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )
 
 
 ############################################ DON'T CHANGE CODE BELOW HERE ############################################
