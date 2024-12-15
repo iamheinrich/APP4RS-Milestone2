@@ -107,8 +107,11 @@ class BENIndexableLMDBDataset(Dataset):
         if self.transform:
             reconstructed_patch = self.transform(reconstructed_patch)
 
-        return reconstructed_patch, item_labels
+        # Convert class labels to integers
+        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
 
+        return reconstructed_patch, index_labels
 
 def resize_band(uint16band) -> torch.float32: 
     band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
@@ -129,8 +132,8 @@ class BENIndexableTifDataset(Dataset):
         self.bandorder = bandorder
         self.transform = transform
 
-
-        self.metadata = pd.read_parquet(base_path + "lithuania_summer.parquet")
+        slash = "" if (base_path[-1] == "/") else "/"
+        self.metadata = pd.read_parquet(base_path + slash + "lithuania_summer.parquet")
         if split:
             self.metadata = self.metadata[self.metadata['split'] == split]
 
@@ -149,7 +152,7 @@ class BENIndexableTifDataset(Dataset):
         item_patch_name = metadata_row['patch_id']
         item_labels = metadata_row['labels']
 
-        path_to_patch = f"{self.base_path}BigEarthNet-Lithuania-Summer-S2/{item_patch_name[:-6]}/{item_patch_name}"
+        path_to_patch = f"{self.base_path}/BigEarthNet-Lithuania-Summer-S2/{item_patch_name[:-6]}/{item_patch_name}"
 
         resized_bands = []
 
@@ -165,7 +168,11 @@ class BENIndexableTifDataset(Dataset):
         if self.transform:
             patch = self.transform(patch)
 
-        return patch, item_labels
+        # Convert class labels to integers
+        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
+        index_labels = torch.tensor(index_labels)
+
+        return patch, index_labels
 
 
 class BENIterableLMDBDataset(IterableDataset):
@@ -243,8 +250,7 @@ class BENIterableLMDBDataset(IterableDataset):
 
                 # Check if the keys of the band dict are the same as the keys in BEN_BANDS
                 band_dict_keys = list(band_dict.keys())
-                assert set(band_dict_keys) == set(BEN_BANDS), f"Expected band dict keys to be {
-                    BEN_BANDS}, got {band_dict_keys}"
+                assert set(band_dict_keys) == set(BEN_BANDS), f"Expected band dict keys to be {BEN_BANDS}, got {band_dict_keys}"
 
                 # Images/Arrays for each band are stored in a list.
                 # The first image corresponds to the first band in bandorder, the second to the second band, etc.
@@ -254,8 +260,7 @@ class BENIterableLMDBDataset(IterableDataset):
 
 
                 # Check if the dimensions of band arrays are 3 (C, H, W)
-                assert len(
-                    patch.shape) == 3, "Expected 3D array for band arrays"
+                assert len(patch.shape) == 3, "Expected 3D array for band arrays"
 
                 # Apply the transform to torch tensor of band arrays if transform is provided
                 if self.transform:
@@ -264,8 +269,7 @@ class BENIterableLMDBDataset(IterableDataset):
                 # Convert labels to tensor of shape (N,) assuming that the label corresponds to the index of the class in BEN_CLASSES
                 # Labels is a list of strings, where each string corresponds to the class of the patch.
                 labels = self.labels_dict[key]
-                assert isinstance(
-                    labels, list), f"Expected labels to be a list, got {type(labels)}"
+                assert isinstance(labels, list), f"Expected labels to be a list, got {type(labels)}"
 
                 # Convert class labels to integers
                 labels = [BEN_CLASSES.index(label) for label in labels]
@@ -381,8 +385,7 @@ def main(
             ds_type = "IterableLMDB " if DS == BENIterableLMDBDataset \
                 else "IndexableTif " if DS == BENIndexableTifDataset \
                 else "IndexableLMDB"
-            print(f"{split}-{ds_type}: {_hash(total_str)
-                                        } @ {time.time() - t0:.2f}s")
+            print(f"{split}-{ds_type}: {_hash(total_str)} @ {time.time() - t0:.2f}s")
 
     print()
     for ds_type in ['indexable_lmdb', 'indexable_tif', 'iterable_lmdb']:

@@ -65,12 +65,10 @@ def convert_ben_dataset_to_lmdb(ben_dataset_path, lmdb_dir):
                     arr = convert_tif_file_to_numpy_array(tif_file_path)
 
                     # Assert that the band's resolution matches the expected resolution
-                    assert band_name in expected_resolutions, f"Unexpected band name: {
-                        band_name}"
+                    assert band_name in expected_resolutions, f"Unexpected band name: {band_name}"
                     expected_res = expected_resolutions[band_name]
                     assert (arr.shape[0] == 1) and (arr.shape[1] == expected_res), (
-                        f"Resolution mismatch for band {band_name}: expected {
-                            expected_res}, got {arr.shape[0]}"
+                        f"Resolution mismatch for band {band_name}: expected {expected_res}, got {arr.shape[0]}"
                     )
 
                     band_dict[band_name] = arr
@@ -119,10 +117,8 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
     num_test_samples = len(metadata_df[metadata_df['split'] == 'test'])
 
     assert num_keys == num_train_samples + num_validation_samples + num_test_samples, (
-        f"The number of keys in the LMDB database is {
-            num_keys} which is not equal to "
-        f"the number of samples in the dataset {
-            num_train_samples + num_validation_samples + num_test_samples}"
+        f"The number of keys in the LMDB database is {num_keys} which is not equal to "
+        f"the number of samples in the dataset {num_train_samples + num_validation_samples + num_test_samples}"
     )
 
     print(f"#samples: {num_keys}")
