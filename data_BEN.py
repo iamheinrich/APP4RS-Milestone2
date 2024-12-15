@@ -113,7 +113,7 @@ class BENIndexableLMDBDataset(Dataset):
 
         return reconstructed_patch, index_labels
 
-def resize_band(uint16band) -> torch.float32: 
+def resize_band(uint16band): 
     band_tensor_unsqueezed = torch.tensor(uint16band, dtype=torch.float32).unsqueeze(0)
     band_tensor_resized = torch.nn.functional.interpolate(band_tensor_unsqueezed, size=(120, 120), mode='bilinear', align_corners=False).squeeze(0)
     return band_tensor_resized
