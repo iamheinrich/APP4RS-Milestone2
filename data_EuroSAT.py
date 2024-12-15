@@ -1,6 +1,6 @@
 # partial functions
 from hashlib import md5
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Callable
 
 import torch
 from lightning.pytorch import LightningDataModule
@@ -15,9 +15,9 @@ import rasterio
 from safetensors.numpy import load as safetensor_load
 import math
 import os
+
 def _hash(data):
     return md5(str(data).encode()).hexdigest()
-
 
 EUROSAT_CLASSES = [
     "Forest",
@@ -132,7 +132,9 @@ class EuroSATIndexableLMDBDataset(Dataset):
         # Get item's metadata
         metadata_row = self.metadata.iloc[idx]
         item_patch_name = metadata_row['patch_name']
-        item_labels = [metadata_row['class_name']]
+        item_label = metadata_row['class_name']
+        assert item_label in EUROSAT_CLASSES, f"Label {item_label} not found in EUROSAT_CLASSES"
+        assert isinstance(item_label, str), f"Expected class name to be a string, got {type(item_label)}"
 
         # Find item safetensor in lmdb through metadata
         with self.env.begin() as txn:
@@ -152,10 +154,10 @@ class EuroSATIndexableLMDBDataset(Dataset):
             reconstructed_patch = self.transform(reconstructed_patch)
 
         # Convert class labels to integers
-        index_labels = [EUROSAT_CLASSES.index(label) for label in item_labels]
-        index_labels = torch.tensor(index_labels)
+        index_label = EUROSAT_CLASSES.index(item_label)
+        index_label = torch.tensor(index_label, dtype=torch.long)
 
-        return reconstructed_patch, index_labels
+        return reconstructed_patch, index_label
 
 
 class EuroSATIndexableTifDataset(Dataset):
@@ -189,9 +191,11 @@ class EuroSATIndexableTifDataset(Dataset):
        # Get item's metadata
         metadata_row = self.metadata.iloc[idx]
         item_patch_name = metadata_row['patch_name']
-        item_labels = [metadata_row['class_name']]
+        item_label = metadata_row['class_name']
+        assert item_label in EUROSAT_CLASSES, f"Label {item_label} not found in EUROSAT_CLASSES"
+        assert isinstance(item_label, str), f"Expected class name to be a string, got {type(item_label)}"
         slash = "" if (self.base_path[-1] == "/") else "/"
-        path_to_patch = f"{self.base_path}{slash}{item_labels[0]}/{item_patch_name}.tif"
+        path_to_patch = f"{self.base_path}{slash}{item_label}/{item_patch_name}.tif"
         resized_bands = []
         # Select bands in bandorder as in method argument
         with rasterio.open(path_to_patch) as src:
@@ -203,9 +207,10 @@ class EuroSATIndexableTifDataset(Dataset):
         patch = torch.cat(resized_bands)
         if self.transform:
             patch = self.transform(patch)
-        index_labels = [EUROSAT_CLASSES.index(label) for label in item_labels]
-        index_labels = torch.tensor(index_labels)
-        return patch, index_labels
+            
+        index_label = EUROSAT_CLASSES.index(item_label)
+        index_label = torch.tensor(index_label, dtype=torch.long)
+        return patch, index_label
     
 
 class EuroSATIterableLMDBDataset(IterableDataset):
@@ -220,10 +225,6 @@ class EuroSATIterableLMDBDataset(IterableDataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: There are still quite a few open questions to consider:
-        # 1. What are the keys for the bands in one dict. I.e. is the array for the first band stored as a correct band name like B01, or just some arbitrary band name.
-        # 2. We have to adapt the convert functions to ensure that the arrays stored per band are in the format (1, H, W)
-        # 3. We have to adapt this class accordingly.
 
         self.lmdb_path = lmdb_path
         self.metadata_parquet_path = metadata_parquet_path
@@ -244,8 +245,10 @@ class EuroSATIterableLMDBDataset(IterableDataset):
 
         # Check if all bands from bandorder are in BEN_BANDS
         for band in self.bandorder:
-            assert band in EUROSAT_BANDS, f"Band {
-                band} not found in EUROSAT_BANDS"
+            assert band in EUROSAT_BANDS, f"Band {band} not found in EUROSAT_BANDS"
+            
+        # LMDB env will be initialized in worker processes to avoid parallel access issues
+        self.env = None
 
     def __len__(self):
         return len(self.metadata)
@@ -258,7 +261,8 @@ class EuroSATIterableLMDBDataset(IterableDataset):
             a tensor of shape (C, H, W) and label is a tensor of shape (N,)
         """
         # Create a connection to the lmdb file
-        env = lmdb.open(self.lmdb_path, readonly=True)
+        if self.env is None:
+            self.env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
 
         # Get worker info
         worker_info = torch.utils.data.get_worker_info()
@@ -275,7 +279,7 @@ class EuroSATIterableLMDBDataset(IterableDataset):
         else:
             iter_keys = self.keys
 
-        with env.begin(write=False) as txn:
+        with self.env.begin(write=False) as txn:
             for key in iter_keys:
                 # Get the dict of bands for key (patch_id)
                 st = txn.get(key.encode())
@@ -302,13 +306,12 @@ class EuroSATIterableLMDBDataset(IterableDataset):
                 # Labels is a list of strings, where each string corresponds to the class of the patch.
                 class_name = self.class_dict[key]
                 assert isinstance(class_name, str), f"Expected class name to be a string, got {type(class_name)}"
-
+                assert class_name in EUROSAT_CLASSES, f"Label {class_name} not found in EUROSAT_CLASSES"
                 # Convert class labels to integers
                 class_id = EUROSAT_CLASSES.index(class_name)
-                class_id = torch.tensor(class_id)
+                class_id = torch.tensor(class_id, dtype=torch.long)
 
                 yield patch, class_id
-
 
 class EuroSATDataModule(LightningDataModule):
     def __init__(
@@ -320,6 +323,8 @@ class EuroSATDataModule(LightningDataModule):
             base_path: Optional[str] = None,
             lmdb_path: Optional[str] = None,
             metadata_parquet_path: Optional[str] = None,
+            g: Optional[torch.Generator] = None,
+            worker_init_fn: Optional[Callable] = None,
     ):
         """
         DataModule for the EuroSAT dataset.
@@ -331,6 +336,8 @@ class EuroSATDataModule(LightningDataModule):
         :param base_path: path to the source BigEarthNet dataset (root of the tar file), for tif dataset
         :param lmdb_path: path to the converted lmdb file, for lmdb dataset
         :param metadata_parquet_path: path to the metadata parquet file, for lmdb dataset
+        :param g: torch generator for reproducibility
+        :param worker_init_fn: function to initialize worker
         """
         super().__init__()
         self.batch_size = batch_size
@@ -340,6 +347,8 @@ class EuroSATDataModule(LightningDataModule):
         self.base_path = base_path
         self.lmdb_path = lmdb_path
         self.metadata_parquet_path = metadata_parquet_path
+        self.g = g
+        self.worker_init_fn = worker_init_fn
 
     def setup(self, stage=None):
         # Based on ds_type, select the appropriate dataset class and keyword args
@@ -375,21 +384,27 @@ class EuroSATDataModule(LightningDataModule):
         return torch.utils.data.DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            generator=self.g,
+            worker_init_fn=self.worker_init_fn,
         )
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            generator=self.g,
+            worker_init_fn=self.worker_init_fn,
         )
 
     def test_dataloader(self):
         return torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            generator=self.g,
+            worker_init_fn=self.worker_init_fn,
         )
 
 
@@ -454,8 +469,7 @@ def main(
             ds_type = "IterableLMDB " if DS == EuroSATIterableLMDBDataset \
                 else "IndexableTif " if DS == EuroSATIndexableTifDataset \
                 else "IndexableLMDB"
-            print(f"{split}-{ds_type}: {_hash(total_str)
-                                        } @ {time.time() - t0:.2f}s")
+            print(f"{split}-{ds_type}: {_hash(total_str)} @ {time.time() - t0:.2f}s")
 
     print()
     for ds_type in ['indexable_lmdb', 'indexable_tif', 'iterable_lmdb']:

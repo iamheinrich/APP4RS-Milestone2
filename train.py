@@ -10,7 +10,9 @@ from torch.optim import Adam
 
 from data_BEN import BENDataModule
 from data_EuroSAT import EuroSATDataModule
-
+import random
+import numpy as np
+import torch
 
 class APP4RSTask2SimpleCNN(nn.Module):
     def __init__(self, input_shape: tuple, output_dim: int):
@@ -85,7 +87,12 @@ class APP4RSTask2LightningModule(LightningModule):
     def test_dataloader(self) -> TRAIN_DATALOADERS:
         return self.datamodule.test_dataloader()
 
-
+# Initialize worker function
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    
 def main(
         dataset: str,
         lmdb_path: str,
@@ -99,8 +106,22 @@ def main(
     :param metadata_parquet_path: the path to the metadata parquet file
     :return: the trained model
     """
-    # TODO: This code is not deterministic. There are multiple sources of randomness that need to be fixed.
-    #       Fix the sources of randomness to make the training deterministic.
+    # Making sure we are as reproducible as possible
+    SEED = 42
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+
+    # Deterministic mode cuda
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # Initialize generator
+    g = torch.Generator()
+    g.manual_seed(SEED)
+
+    # Use deterministic algorithms for torch
+    torch.use_deterministic_algorithms(True)
     logging.getLogger("lightning.pytorch.utilities.rank_zero").setLevel(logging.WARNING)  # suppress some prints
     dm_kwargs = {
         "lmdb_path": lmdb_path,
@@ -108,7 +129,9 @@ def main(
         "ds_type": "indexable_lmdb",
         "batch_size": 32,
         "num_workers": 4,
-        "bandorder": ["B02", "B03", "B04", "B08"]
+        "bandorder": ["B02", "B03", "B04", "B08"],
+        "g": g,
+        "worker_init_fn": seed_worker
     }
 
     if dataset == "BEN":
@@ -128,7 +151,7 @@ def main(
     )
 
     trainer = Trainer(max_epochs=2, logger=logger, enable_progress_bar=False, enable_model_summary=False,
-                      limit_train_batches=100, limit_val_batches=32)
+                      limit_train_batches=100, limit_val_batches=32, deterministic=True)
     trainer.fit(model, dm)
     trainer.test(model, datamodule=dm)
     return model

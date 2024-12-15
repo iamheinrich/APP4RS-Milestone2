@@ -16,8 +16,7 @@ def get_band_safetensor_from_tif(tif_path):
             # Append a 1 to the beginning of the array to make it 3D
             content = np.expand_dims(content, axis=0)
 
-            assert len(content.shape) == 3, f"Expected content to be a 3D array, got {
-                content.shape}"
+            assert len(content.shape) == 3, f"Expected content to be a 3D array, got {content.shape}"
             tmp_band_dict[EUROSAT_BANDS[i-1]] = content
         st = save(tmp_band_dict)  # Saves to a safetensors buffer
         return st
@@ -134,12 +133,7 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
     num_validation_samples = len(metadata[metadata['split'] == 'validation'])
     num_test_samples = len(metadata[metadata['split'] == 'test'])
 
-    assert num_keys == num_train_samples + num_validation_samples + num_test_samples, (
-        f"The number of keys in the LMDB database is {
-            num_keys} which is not equal to "
-        f"the number of samples in the dataset {
-            num_train_samples + num_validation_samples + num_test_samples}"
-    )
+    assert num_keys == num_train_samples + num_validation_samples + num_test_samples, (f"The number of keys in the LMDB database is {num_keys} which is not equal to the number of samples in the dataset {num_train_samples + num_validation_samples + num_test_samples}")
 
     print(f"#samples: {num_keys}")
     print(f"#samples_train: {num_train_samples}")

@@ -1,6 +1,6 @@
 # partial functions
 from hashlib import md5
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Callable
 
 import torch
 from lightning.pytorch import LightningDataModule
@@ -44,6 +44,15 @@ BEN_CLASSES = [
 ]
 BEN_CLASSES.sort()
 assert len(BEN_CLASSES) == 19, f"Expected 19 classes, got {len(BEN_CLASSES)}"
+
+# Function to convert labels to one-hot encoded tensor. Necessary for multi-label classification.
+def labels_to_onehot(labels, num_classes=19):
+    onehot = torch.zeros(num_classes)
+    for label in labels:
+        idx = BEN_CLASSES.index(label)
+        onehot[idx] = 1
+    return onehot
+
 
 BEN_BANDS = ["B01", "B02", "B03", "B04", "B05",
              "B06", "B07", "B08", "B09", "B11", "B12", "B8A"]
@@ -107,9 +116,8 @@ class BENIndexableLMDBDataset(Dataset):
         if self.transform:
             reconstructed_patch = self.transform(reconstructed_patch)
 
-        # Convert class labels to integers
-        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
-        index_labels = torch.tensor(index_labels)
+        # Convert class labels to one-hot encoded tensor
+        index_labels = labels_to_onehot(item_labels)
 
         return reconstructed_patch, index_labels
 
@@ -168,9 +176,8 @@ class BENIndexableTifDataset(Dataset):
         if self.transform:
             patch = self.transform(patch)
 
-        # Convert class labels to integers
-        index_labels = [BEN_CLASSES.index(label) for label in item_labels]
-        index_labels = torch.tensor(index_labels)
+        # Convert class labels to one-hot encoded tensor
+        index_labels = labels_to_onehot(item_labels)
 
         return patch, index_labels
 
@@ -187,9 +194,6 @@ class BENIterableLMDBDataset(IterableDataset):
         :param split: split of the dataset to use, one of 'train', 'validation', 'test', None (uses all data)
         :param transform: a torchvision transform to apply to the images after loading
         """
-        # TODO: There are still quite a few open questions to consider:
-        # 2. We have to adapt the convert functions to ensure that the arrays stored per band are in the format (1, H, W)
-        # 3. We have to adapt this class accordingly.
 
         self.lmdb_path = lmdb_path
         self.metadata_parquet_path = metadata_parquet_path
@@ -210,6 +214,9 @@ class BENIterableLMDBDataset(IterableDataset):
         # Check if all bands from bandorder are in BEN_BANDS
         for band in self.bandorder:
             assert band in BEN_BANDS, f"Band {band} not found in BEN_BANDS"
+            
+        # LMDB env will be initialized in worker processes to avoid parallel access issues
+        self.env = None
 
     def __len__(self):
         return len(self.metadata)
@@ -223,7 +230,8 @@ class BENIterableLMDBDataset(IterableDataset):
         """
 
         # Create a connection to the lmdb file
-        env = lmdb.open(self.lmdb_path, readonly=True)
+        if self.env is None:
+            self.env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
 
         # Get worker info
         worker_info = torch.utils.data.get_worker_info()
@@ -239,7 +247,7 @@ class BENIterableLMDBDataset(IterableDataset):
         else:
             iter_keys = self.keys
 
-        with env.begin(write=False) as txn:
+        with self.env.begin(write=False) as txn:
             for key in iter_keys:
                 # Get the dict of bands for key (patch_id)
                 st = txn.get(key.encode())
@@ -269,9 +277,8 @@ class BENIterableLMDBDataset(IterableDataset):
                 # Check if numpy array contains strings as labels
                 assert all(isinstance(label, str) for label in labels), f"Expected labels to be a list of strings, got {labels.dtype}"
 
-                # Convert class labels to integers
-                labels = [BEN_CLASSES.index(label) for label in labels]
-                labels = torch.tensor(labels)
+                # Convert class labels to one-hot encoded tensor
+                index_labels = labels_to_onehot(labels)
 
                 yield patch, labels
 
@@ -286,6 +293,8 @@ class BENDataModule(LightningDataModule):
             base_path: Optional[str] = None,
             lmdb_path: Optional[str] = None,
             metadata_parquet_path: Optional[str] = None,
+            g: Optional[torch.Generator] = None,
+            worker_init_fn: Optional[Callable] = None,
     ):
         """
         DataModule for the BigEarthNet dataset.
@@ -297,6 +306,8 @@ class BENDataModule(LightningDataModule):
         :param base_path: path to the source BigEarthNet dataset (root of the tar file), for tif dataset
         :param lmdb_path: path to the converted lmdb file, for lmdb dataset
         :param metadata_parquet_path: path to the metadata parquet file, for lmdb dataset
+        :param g: torch generator for reproducibility
+        :param worker_init_fn: function to initialize worker
         """
         super().__init__()
         self.batch_size = batch_size
@@ -306,6 +317,8 @@ class BENDataModule(LightningDataModule):
         self.base_path = base_path
         self.lmdb_path = lmdb_path
         self.metadata_parquet_path = metadata_parquet_path
+        self.g = g
+        self.worker_init_fn = worker_init_fn
 
     def setup(self, stage=None):
         # Based on ds_type, select the appropriate dataset class and keyword args
@@ -341,21 +354,27 @@ class BENDataModule(LightningDataModule):
         return torch.utils.data.DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            generator=self.g,
+            worker_init_fn=self.worker_init_fn,
         )
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            generator=self.g,
+            worker_init_fn=self.worker_init_fn,
         )
 
     def test_dataloader(self):
         return torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            generator=self.g,
+            worker_init_fn=self.worker_init_fn,
         )
 
 
