@@ -150,5 +150,5 @@ def main(input_data_path: str, output_lmdb_path: str, output_parquet_path: str):
 if __name__ == "__main__":
     input_data_path = 'untracked-files/EuroSAT_MS'
     output_lmdb_path = 'untracked-files/datasets/EuroSAT.lmdb'
-    output_parquet_path = 'untracked-files/datasets/metadata.parquet'
+    output_parquet_path = "untracked-files/datasets/EuroSAT.parquet"
     main(input_data_path, output_lmdb_path, output_parquet_path)
